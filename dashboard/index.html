@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Launch Radar — pre-token protocols ranked by implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="blip" aria-hidden="true"></span>
+    <div>
+      <h1>Token Launch Radar</h1>
+      <p class="tagline">Protocols that record no token yet, ranked by what their token would be worth at their peers' multiples — and how to farm each one.</p>
+    </div>
+  </div>
+  <div class="chips" id="chips" aria-label="Snapshot summary"></div>
+</header>
+
+<main>
+  <section id="board-view">
+    <div class="model-note" id="model-note"></div>
+    <form class="controls" id="controls" autocomplete="off">
+      <label class="grow">Search
+        <input type="search" id="q" placeholder="Protocol name or slug">
+      </label>
+      <label>Category
+        <select id="cat"></select>
+      </label>
+      <label>Chain
+        <select id="chain"></select>
+      </label>
+      <label>Sort
+        <select id="sort">
+          <option value="rank">Implied value (rank)</option>
+          <option value="tvl">TVL, high first</option>
+          <option value="change">7-day growth, high first</option>
+          <option value="age">Age, oldest first</option>
+          <option value="multiple">Multiple, high first</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="watch"> Watchlist only</label>
+      <span class="count" id="count"></span>
+    </form>
+    <div class="table-wrap">
+      <table id="board">
+        <thead>
+          <tr>
+            <th class="num">#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+            <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th>
+            <th class="num">&times;TVL</th><th class="num">Age</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <section class="evidence" id="evidence"></section>
+  </section>
+
+  <section id="detail-view" hidden></section>
+</main>
+
+<footer>
+  <p>Implied value is this dashboard's own claim, derived only from the snapshot's figures as the model note describes; it is not a prediction that a token will be issued, or when. A protocol is described as recording no token when the snapshot carries none for it. Data: the sealed DefiLlama snapshot named in the header.</p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
