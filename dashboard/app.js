@@ -10,6 +10,13 @@
   var bySlug = {};
   rows.forEach(function (r) { bySlug[r.slug] = r; });
 
+  // Where each protocol would rank on TVL alone: the board's small arrows measure the
+  // distance between that rank and the implied-value rank, so a reader sees at a glance
+  // which names the multiples, not the size, are carrying.
+  var tvlRank = {};
+  rows.slice().sort(function (a, b) { return b.tvl_usd - a.tvl_usd; })
+    .forEach(function (r, i) { tvlRank[r.slug] = i + 1; });
+
   // ------------------------------------------------------------ formatting
 
   function esc(s) {
@@ -95,7 +102,7 @@
       chip('Snapshot', D.as_of) +
       chip('Protocols scanned', D.scanned.toLocaleString('en-US')) +
       chip('Launch candidates ranked', rows.length.toLocaleString('en-US')) +
-      chip('Watchlist covered', watchCount + ' / ' + watchCount) +
+      chip('Watchlist covered', watchCount + ' / ' + D.watchlistCount) +
       chip('Derivatives set aside', D.setAside.length.toLocaleString('en-US')) +
       chip('Comparables fitted', D.fit.sampleSize.toLocaleString('en-US'));
     function chip(k, v) { return '<span class="chip">' + k + ': <strong>' + esc(v) + '</strong></span>'; }
@@ -106,7 +113,9 @@
       '<strong>How the value is derived.</strong> The model fits the ' + D.fit.sampleSize +
       ' protocols in this snapshot whose tokens already trade: their median market cap is ' +
       D.fit.globalMultiple.toFixed(2) + '&times; TVL, with a per-category multiple and a size bend of ' +
-      D.fit.sizeSlope.toFixed(2) + ' (bigger protocols trade at lower multiples). Each pre-token protocol is then scored ' +
+      D.fit.sizeSlope.toFixed(2) + ' (bigger protocols trade at lower multiples). The fit is robust: every comparable\u2019s ' +
+      'ratio is first clamped to the sample\u2019s Tukey fences, so one wild token cannot set a whole category, and thin ' +
+      'categories are shrunk toward the global median. Each pre-token protocol is then scored ' +
       'from its own TVL, its category multiple, its 7-day TVL change, its tracked age and its chain count. No name is scored by hand.' +
       '<span class="formula">implied = TVL &times; category multiple (size-bent) &times; momentum &times; maturity &times; breadth</span>';
   }
@@ -161,14 +170,19 @@
       return;
     }
     els.rows.innerHTML = list.map(function (r) {
+      var delta = tvlRank[r.slug] - r.rank;
+      var arrow = delta === 0 ? '' :
+        '<span class="delta ' + (delta > 0 ? 'up' : 'down') + '" title="By TVL alone this would rank #' +
+        tvlRank[r.slug] + '; the fitted multiples move it ' + (delta > 0 ? 'up ' : 'down ') + Math.abs(delta) +
+        '">' + (delta > 0 ? '\u25B2' : '\u25BC') + Math.abs(delta) + '</span>';
       return '<tr data-slug="' + esc(r.slug) + '">' +
-        '<td class="num rank">' + r.rank + '</td>' +
+        '<td class="num rank">' + r.rank + arrow + '</td>' +
         '<td class="name">' + esc(r.name) + badges(r) + '<span class="slug">' + esc(r.slug) + '</span></td>' +
         '<td class="cat">' + esc(r.category || '—') + '</td>' +
         '<td class="chains">' + esc(r.chains.slice(0, 3).join(', ')) + (r.chains.length > 3 ? ' +' + (r.chains.length - 3) : '') + '</td>' +
-        '<td class="num">' + compact(r.tvl_usd) + '</td>' +
+        '<td class="num" title="' + money(r.tvl_usd) + '">' + compact(r.tvl_usd) + '</td>' +
         '<td class="num">' + pct(r.change_7d) + '</td>' +
-        '<td class="num implied">' + compact(r.implied_value_usd) + '</td>' +
+        '<td class="num implied" title="' + money(r.implied_value_usd) + '">' + compact(r.implied_value_usd) + '</td>' +
         '<td class="num">' + r.multiple.toFixed(2) + '&times;</td>' +
         '<td class="num">' + ageText(r.age_days) + '</td>' +
         '</tr>';
@@ -193,7 +207,7 @@
       '<p>The board never ranks these; they are what the multiples are fitted on. The largest by TVL:</p>' +
       '<table><thead><tr><th>Protocol</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">Multiple</th></tr></thead><tbody>' + live + '</tbody></table></div>' +
       '<div class="card"><h2>Fitted multiples by category</h2>' +
-      '<p>Median market cap / TVL per category across ' + D.fit.sampleSize + ' trading protocols, shrunk toward the global median where a category is thin.</p>' +
+      '<p>Median market cap / TVL per category across ' + D.fit.sampleSize + ' trading protocols, each comparable first clamped to the sample\u2019s Tukey fences, then shrunk toward the global median where a category is thin. Read the Sample column before trusting a multiple: a category standing on one or two names is mostly the global median talking.</p>' +
       '<table><thead><tr><th>Category</th><th class="num">Sample</th><th class="num">Multiple</th></tr></thead><tbody>' + cats + '</tbody></table></div>' +
       '<div class="card"><h2>Set aside: not launches</h2>' +
       '<p>' + D.setAside.length + ' records carry no token of their own but are not launches either: wrapped, staked, bridged or exchange products of an asset that already trades, and later versions of a ranked protocol. The largest:</p>' +
@@ -202,12 +216,24 @@
 
   // ------------------------------------------------------------ detail view
 
+  // A factor's bar runs on a log scale from 0.25x to 4x with a tick at 1x, drawn from the
+  // tick outward: teal when the factor lifts the value, amber when it discounts it. A bar
+  // pinned at the tick is a factor that did nothing, which is itself worth seeing.
   function factorRow(label, value, note) {
-    var width = Math.max(3, Math.min(100, (value / 1.6) * 100));
+    var lo = Math.log(0.25);
+    var span = Math.log(4) - lo;
+    function pos(v) {
+      return Math.max(0, Math.min(100, ((Math.log(Math.max(v, 0.001)) - lo) / span) * 100));
+    }
+    var centre = pos(1);
+    var end = pos(value);
+    var left = Math.min(centre, end);
+    var width = Math.max(1.5, Math.abs(end - centre));
     return '<div class="factor"><span class="fname">' + label + '</span>' +
-      '<span class="track"><span class="fill" style="display:block;width:' + width.toFixed(0) + '%"></span></span>' +
-      '<span class="fval">' + value.toFixed(2) + '&times;</span></div>' +
-      (note ? '' : '');
+      '<span class="track"><span class="centre"></span>' +
+      '<span class="fill' + (value < 1 ? ' below' : '') + '" style="left:' + left.toFixed(1) + '%;width:' + width.toFixed(1) + '%"></span></span>' +
+      '<span class="fval">' + value.toFixed(2) + '&times;</span>' +
+      '<span class="fnote">' + note + '</span></div>';
   }
 
   function renderDetail(slug) {
@@ -233,10 +259,24 @@
         return '<div class="stat"><div class="k">' + s[0] + '</div><div class="v' + (s[2] ? ' signal' : '') + '">' + esc(s[1]) + '</div></div>';
       }).join('') + '</div>' +
       '<div class="factors"><h3>How this implied value is built</h3>' +
-      factorRow('Category multiple', r.multiple, '') +
-      factorRow('Momentum (7-day TVL)', r.momentum, '') +
-      factorRow('Maturity (tracked age)', r.maturity, '') +
-      factorRow('Breadth (chains)', r.breadth, '') +
+      factorRow('Category multiple', r.multiple,
+        catFit
+          ? esc(r.category || 'Uncategorised') + ' median fitted from ' + catFit.n + ' trading comparable' + (catFit.n === 1 ? '' : 's') +
+            ', clamped to the sample\u2019s fences and shrunk toward the global ' + D.fit.globalMultiple.toFixed(2) +
+            '&times;, then bent for this protocol\u2019s size.'
+          : 'No comparable in this category trades, so the global median ' + D.fit.globalMultiple.toFixed(2) +
+            '&times; stands in, bent for this protocol\u2019s size.') +
+      factorRow('Momentum (7-day TVL)', r.momentum,
+        r.change_7d === null
+          ? 'No 7-day change reported, so momentum counts as neutral.'
+          : 'TVL moved ' + (r.change_7d > 0 ? '+' : '') + r.change_7d.toFixed(1) + '% in seven days; the model counts half of that, clamped.') +
+      factorRow('Maturity (tracked age)', r.maturity,
+        r.age_days === null
+          ? 'Listing day unreported; the median tracked age of the snapshot stands in.'
+          : 'Tracked for ' + r.age_days + ' days; the factor reaches 1.00&times; at three tracked years.') +
+      factorRow('Breadth (chains)', r.breadth,
+        'Live on ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') +
+        '; +2.5% per extra chain, capped at +20%, because the TVL above already sums those chains.') +
       '<p class="how">' + money(r.tvl_usd) + ' of TVL. The ' + esc(r.category || 'Uncategorised') + ' category multiple is ' +
       (catFit ? catFit.multiple.toFixed(2) : D.fit.globalMultiple.toFixed(2)) + '&times;, fitted from ' +
       (catFit ? catFit.n : 0) + ' trading protocol' + (catFit && catFit.n === 1 ? '' : 's') +

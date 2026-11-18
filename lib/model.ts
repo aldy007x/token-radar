@@ -11,13 +11,18 @@
 //      category (each category median shrunk toward the global one by its sample size), and a
 //      pooled size slope: across the comparables, doubling TVL comes with a lower multiple,
 //      so the fitted multiple for a subject bends with its size exactly as the market's does.
+//      The fit is robust: every comparable's log ratio is first clamped to the sample's own
+//      Tukey fences (Q1 - 1.5 IQR, Q3 + 1.5 IQR), so one wild comparable — a token trading at
+//      hundreds of times its protocol's TVL — cannot set a whole category's multiple, and a
+//      category resting on a single comparable stays visibly shrunk toward the global median.
 //   2. Momentum. A protocol whose TVL grew over the last seven days is launching into demand;
 //      one that shrank is not. The week's change, clamped, scales the fitted value.
 //   3. Maturity. A protocol DefiLlama has tracked for years with no token has a settled
 //      product and a settled user base; one listed last month has neither. Age since listing,
 //      on a log curve, scales the fitted value.
-//   4. Breadth. A protocol live on many chains distributes any launch across all of them;
-//      each extra chain adds a small premium.
+//   4. Breadth. A protocol live on many chains distributes any launch across all of them, but
+//      its TVL already sums those chains, so the premium is kept small on purpose: chain
+//      count alone must never carry a ranking the other factors do not.
 //
 // implied = TVL x category multiple (size-bent) x momentum x maturity x breadth, in dollars.
 //
@@ -52,7 +57,7 @@ export interface Snapshot {
 
 /** The model's constants, stated on the dashboard so a reader can disagree with them. */
 export const MODEL = {
-  version: 'radar-mk2',
+  version: 'radar-mk3',
   shrinkK: 5, // a category median's pull toward the global median, in phantom samples
   sizeSlopeClamp: 1.2, // the most the size bend may move a multiple, in log points
   multipleFloor: 0.004,
@@ -62,7 +67,7 @@ export const MODEL = {
   momentumFloorPct: -60,
   maturityBase: 0.72, // a protocol listed today keeps 72% of its fitted value
   maturityFullDays: 1095, // three tracked years earns the whole maturity factor
-  breadthPerChain: 0.05,
+  breadthPerChain: 0.025, // +2.5% a chain, +20% at most: TVL already aggregates the chains
   breadthMaxChains: 8,
 };
 
@@ -155,6 +160,30 @@ function logRatio(p: Protocol): number {
   return Math.log(p.mcap_usd! / p.tvl_usd);
 }
 
+/** The q-quantile of an ascending array, linearly interpolated between its neighbours. */
+function quantile(sorted: number[], q: number): number {
+  const at = (sorted.length - 1) * q;
+  const lo = Math.floor(at);
+  const hi = Math.min(lo + 1, sorted.length - 1);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (at - lo);
+}
+
+/**
+ * The comparables' log ratios with each one clamped to the sample's Tukey fences
+ * (Q1 - 1.5 IQR to Q3 + 1.5 IQR). One comparable whose token trades at hundreds of times
+ * its protocol's TVL is evidence about that token, not about its whole category: inside
+ * the fences every figure stands as recorded, outside them it counts at the fence.
+ */
+function winsorizedLogs(sample: Protocol[]): number[] {
+  const raw = sample.map(logRatio);
+  const sorted = [...raw].sort((a, b) => a - b);
+  const q1 = quantile(sorted, 0.25);
+  const q3 = quantile(sorted, 0.75);
+  const lo = q1 - 1.5 * (q3 - q1);
+  const hi = q3 + 1.5 * (q3 - q1);
+  return raw.map((v) => Math.max(lo, Math.min(hi, v)));
+}
+
 /** The protocols that can teach the model anything: a token, a market cap and a TVL. */
 export function comparables(protocols: Protocol[]): Protocol[] {
   return protocols.filter((p) => !recordsNoToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
@@ -163,7 +192,7 @@ export function comparables(protocols: Protocol[]): Protocol[] {
 export function fitMultiples(protocols: Protocol[]): MultipleFit {
   const sample = comparables(protocols);
   if (sample.length < 8) throw new Error(`only ${sample.length} comparables: too few to fit a model`);
-  const logs = sample.map(logRatio);
+  const logs = winsorizedLogs(sample);
   const globalLog = median(logs);
   const centreLogTvl = sample.reduce((sum, p) => sum + Math.log(p.tvl_usd), 0) / sample.length;
 
@@ -179,11 +208,11 @@ export function fitMultiples(protocols: Protocol[]): MultipleFit {
   const sizeSlope = den === 0 ? 0 : num / den;
 
   const byCategory = new Map<string, number[]>();
-  for (const p of sample) {
-    const key = p.category ?? 'Uncategorised';
+  for (let i = 0; i < sample.length; i++) {
+    const key = sample[i]!.category ?? 'Uncategorised';
     const list = byCategory.get(key);
-    if (list === undefined) byCategory.set(key, [logRatio(p)]);
-    else list.push(logRatio(p));
+    if (list === undefined) byCategory.set(key, [logs[i]!]);
+    else list.push(logs[i]!);
   }
   const categories = [...byCategory.entries()]
     .map(([category, values]) => {
@@ -299,44 +328,63 @@ export function weeksFor(age: number | null): number {
   return 24;
 }
 
-type Playbook = (p: Protocol, chain: string) => [string, string];
+/** Round a planning amount to the nearest $10, never below $10. */
+function round10(n: number): number {
+  return Math.max(10, Math.round(n / 10) * 10);
+}
+
+/**
+ * A category's playbook: the exact first action, the position step that follows it, and the
+ * one metric worth tracking weekly. Amounts come from the plan's own capital split: pos is
+ * the position half of the wallet, act the size of one recurring action.
+ */
+type Playbook = (p: Protocol, chain: string, pos: number, act: number) => [string, string, string];
 
 const PLAYBOOKS: Record<string, Playbook> = {
-  dex: (p, chain) => [
-    `Swap through ${p.name}'s main pairs on ${chain} in both directions, $200-400 a round trip, twice a week, so your wallet shows real trading volume rather than one wash day.`,
-    `Provide liquidity to ${p.name}'s deepest ${chain} pool with half your capital and leave it in place; liquidity providers are the users a DEX launch rewards first and most visibly.`,
+  dex: (p, chain, pos, act) => [
+    `First action: swap about ${money(act)} through ${p.name}'s deepest ${chain} pair today, in and back out. Then repeat round trips of that size twice a week, in both directions, so the wallet builds real trading volume rather than one wash day.`,
+    `Commit the position half, about ${money(pos)}, as liquidity in that same ${chain} pool and leave it in place; liquidity providers are the users a DEX launch rewards first and most visibly.`,
+    'your cumulative swap volume and your share of the pool',
   ],
-  lending: (p, chain) => [
-    `Supply your capital as collateral on ${p.name} on ${chain} and keep the position open; supplied balances are the figure lending launches have historically snapshotted.`,
-    `Borrow a modest amount against your collateral on ${p.name}, repay it in full, and repeat monthly, so the wallet carries both sides of the market's history, not just deposits.`,
+  lending: (p, chain, pos, act) => [
+    `First action: supply about ${money(pos)}, the position half, as collateral on ${p.name} on ${chain} today and leave it untouched; supplied balances are the figure lending launches have historically snapshotted.`,
+    `Once a month, borrow about ${money(act)} against that collateral, hold it a few days and repay in full, so the wallet carries both sides of the market's history, not just deposits.`,
+    'your net supplied balance and your count of completed borrow-and-repay cycles',
   ],
-  derivatives: (p, chain) => [
-    `Open small perpetual positions on ${p.name} on ${chain}, a few hundred dollars of notional at a time, and close them over days rather than minutes, building genuine trading volume.`,
-    `Post margin on ${p.name} and keep an open position through each weekly cycle; sustained open interest is the activity a derivatives launch measures, not one large trade.`,
+  derivatives: (p, chain, pos, act) => [
+    `First action: post about ${money(pos)} of margin on ${p.name} on ${chain} today and open one small position, a few times the margin in notional, holding it for days rather than minutes.`,
+    `Keep a position open through each weekly cycle, resizing with about ${money(act)} of margin adjustments rather than flattening; sustained open interest is the activity a derivatives launch measures, not one large trade.`,
+    'your cumulative notional volume and your count of days with an open position',
   ],
-  yield: (p, chain) => [
-    `Deposit your capital into ${p.name}'s flagship ${chain} vault or strategy and leave it deposited; time-weighted balances are what vault launches reward, not deposits made the week before.`,
-    `Use a second ${p.name} strategy on ${chain} with a smaller share of capital, and rebalance between the two monthly, so the wallet shows considered use of the whole product.`,
+  yield: (p, chain, pos, act) => [
+    `First action: deposit about ${money(pos)}, the position half, into ${p.name}'s flagship ${chain} vault today and leave it deposited; time-weighted balances are what vault launches reward, not deposits made the week before.`,
+    `Put about ${money(act)} into a second ${p.name} strategy on ${chain} and rebalance between the two monthly, so the wallet shows considered use of the whole product.`,
+    'your time-weighted balance in each vault',
   ],
-  staking: (p, chain) => [
-    `Stake through ${p.name} on ${chain} with your capital and hold the resulting position without interruption; staking duration is the one figure a staking launch can snapshot fairly.`,
-    `Restake or delegate a second, smaller tranche through ${p.name} and claim any rewards it issues on schedule, so the wallet shows an active, maintained staking history.`,
+  staking: (p, chain, pos, act) => [
+    `First action: stake about ${money(pos)}, the position half, through ${p.name} on ${chain} today and do not unstake; staking duration is the one figure a staking launch can snapshot fairly.`,
+    `Stake a second tranche of about ${money(act)} through ${p.name} a month later and claim any rewards it issues on schedule, so the wallet shows an active, maintained staking history.`,
+    'your staked balance multiplied by the days it has been held',
   ],
-  bridge: (p, chain) => [
-    `Bridge funds to ${chain} through ${p.name} in amounts of $300-500, then bridge part back a week later, so both directions of the route carry your wallet's history.`,
-    `Make ${p.name} your default route for moving capital onto ${chain} for the whole plan period; repeated genuine transfers are what bridge launches have rewarded.`,
+  bridge: (p, chain, pos, act) => [
+    `First action: bridge about ${money(act)} to ${chain} through ${p.name} today, then bridge a third of it back a week later, so both directions of the route carry your wallet's history.`,
+    `Make ${p.name} your default route for moving capital onto ${chain} for the whole plan period, in amounts of about ${money(act)} and keeping roughly ${money(pos)} working on the far side; repeated genuine transfers are what bridge launches have rewarded.`,
+    'your bridged volume in each direction and the number of distinct weeks you bridged',
   ],
-  rwa: (p, chain) => [
-    `Complete ${p.name}'s onboarding on ${chain}, including any identity checks it requires, early: a finished account predating a launch is worth more than one opened after.`,
-    `Hold a position in ${p.name}'s main ${chain} offering for the full plan period, adding a small amount monthly, so the account shows a holder rather than a passer-by.`,
+  rwa: (p, chain, pos, act) => [
+    `First action: complete ${p.name}'s onboarding on ${chain} today, including any identity checks it requires, before depositing anything: a finished account predating a launch is worth more than one opened after.`,
+    `Then hold about ${money(pos)} in ${p.name}'s main ${chain} offering for the full plan period, adding about ${money(act)} a month, so the account shows a holder rather than a passer-by.`,
+    'your held balance and the age of your completed account',
   ],
-  cex: (p, chain) => [
-    `Trade spot on ${p.name} weekly in modest size and keep a balance on the exchange between trades; account age plus steady volume is what exchange launches have measured.`,
-    `Use ${p.name}'s earn or staking product with a share of your capital for the plan period, so the account carries product history beyond trading alone.`,
+  cex: (p, chain, pos, act) => [
+    `First action: deposit about ${money(pos)} on ${p.name} today and make one spot trade of about ${money(act)}; account age plus steady volume is what exchange launches have measured.`,
+    `Trade spot weekly in that size, keep the balance on the exchange between trades, and use ${p.name}'s earn or staking product with part of it, so the account carries product history beyond trading alone.`,
+    'your monthly spot volume and your average held balance',
   ],
-  generic: (p, chain) => [
-    `Use ${p.name}'s core product on ${chain} with your capital every week, in the way its documentation leads with; launches reward the users the product was built for.`,
-    `Take part in ${p.name}'s second surface as well, a companion feature, quest or integration on ${chain}, so your history is not a single repeated transaction.`,
+  generic: (p, chain, pos, act) => [
+    `First action: use ${p.name}'s core product on ${chain} with about ${money(act)} today, in the way its documentation leads with; launches reward the users the product was built for.`,
+    `Commit about ${money(pos)}, the position half, to that core use, and take part in ${p.name}'s second surface as well — a companion feature, quest or integration on ${chain} — so your history is not a single repeated transaction.`,
+    'your count of active weeks and your total volume through the product',
   ],
 };
 
@@ -375,10 +423,12 @@ const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 export function farmSteps(p: Protocol, age: number | null): string[] {
   const chain = p.chains[0] ?? 'Ethereum';
   const capital = capitalFor(p.tvl_usd);
+  const pos = round10(capital / 2);
+  const act = round10(capital / 5);
   const weeks = weeksFor(age);
-  const [core1, core2] = playbookFor(p.category)(p, chain);
+  const [core1, core2, metric] = playbookFor(p.category)(p, chain, pos, act);
   const steps: string[] = [
-    `Set up a dedicated wallet for ${p.name} and fund it with about ${money(capital)} on ${chain}; budget for ${feeNote(chain)}, and never farm with money you cannot leave untouched for months.`,
+    `Set up a dedicated wallet for ${p.name} and fund it with about ${money(capital)} on ${chain}, split in two halves: one backs the position step below, the other funds the recurring activity and the fees. Budget for ${feeNote(chain)}, and never farm with money you cannot leave untouched for months.`,
     core1,
     core2,
   ];
@@ -394,7 +444,7 @@ export function farmSteps(p: Protocol, age: number | null): string[] {
   }
   steps.push(
     `Hold the routine for about ${weeks} weeks, then keep the position and the wallet alive with one action a month; a dead wallet in the month of a snapshot reads as an exited user.`,
-    `Follow ${p.name}'s official channels weekly for a points programme or token announcement, and log every transaction hash and date in a spreadsheet, so you can prove the history if a claim ever asks.`,
+    `Follow ${p.name}'s official channels weekly for a points programme or token announcement. Log every transaction hash and date in a spreadsheet and total ${metric} each week, so the history is provable if a claim ever asks.`,
   );
   return steps;
 }
@@ -445,6 +495,8 @@ export interface Radar {
   floor_usd: number;
   model_version: string;
   scanned: number;
+  /** How many protocols the snapshot's watchlist names, so coverage reads as a real fraction. */
+  watchlistCount: number;
   fit: MultipleFit;
   rows: BoardRow[];
   live: LiveRow[];
@@ -515,6 +567,7 @@ export function buildRadar(snapshot: Snapshot): Radar {
     floor_usd: snapshot.floor_usd,
     model_version: MODEL.version,
     scanned: snapshot.protocols.length,
+    watchlistCount: snapshot.watchlist.length,
     fit,
     rows,
     live,

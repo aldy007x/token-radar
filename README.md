@@ -15,7 +15,11 @@ The implied value is fitted, never assigned by hand. The 128 protocols in the sa
 whose tokens already trade and carry a market cap are the comparables: the model takes their
 median market-cap/TVL multiple per category (shrunk toward the global median of 0.21x where a
 category is thin), bends it by a pooled size slope (larger protocols trade at lower multiples),
-and scales it by each subject's own seven-day TVL momentum, tracked age and chain breadth:
+and scales it by each subject's own seven-day TVL momentum, tracked age and chain breadth.
+The fit is robust: every comparable's ratio is first clamped to the sample's own Tukey fences,
+so a single token trading at hundreds of times its protocol's TVL cannot set a whole
+category's multiple, and the breadth premium is deliberately small (+2.5% per extra chain,
++20% at most) because a protocol's TVL already sums its chains:
 
 ```
 implied = TVL x category multiple (size-bent) x momentum x maturity x breadth

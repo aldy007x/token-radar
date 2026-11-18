@@ -203,11 +203,18 @@ td .flat { color: var(--faint); }
 
 .factors { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px; }
 .factors h3, .plan h3 { margin: 0 0 10px; font-size: 15px; }
-.factor { display: grid; grid-template-columns: 170px 1fr 64px; gap: 12px; align-items: center; margin: 7px 0; font-size: 13.5px; }
+.factor { display: grid; grid-template-columns: 170px 1fr 64px; gap: 4px 12px; align-items: center; margin: 9px 0; font-size: 13.5px; }
 .factor .fname { color: var(--dim); }
-.factor .track { height: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 99px; overflow: hidden; }
-.factor .fill { height: 100%; background: var(--signal); }
+.factor .track { position: relative; height: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 99px; }
+.factor .centre { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--faint); opacity: 0.8; }
+.factor .fill { position: absolute; top: 0; height: 100%; background: var(--signal); border-radius: 99px; }
+.factor .fill.below { background: var(--amber); }
 .factor .fval { text-align: right; font-variant-numeric: tabular-nums; }
+.factor .fnote { grid-column: 2 / 4; color: var(--faint); font-size: 12px; }
+
+td.rank .delta { display: block; font-size: 11px; font-weight: 600; }
+td.rank .delta.up { color: var(--green); }
+td.rank .delta.down { color: var(--red); }
 .factors .how { color: var(--faint); font-size: 13px; margin-top: 10px; }
 
 .plan { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 22px; }
