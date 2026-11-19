@@ -54,6 +54,10 @@
     var out = '';
     if (r.watchlist) out += '<span class="badge watch">WATCHLIST</span>';
     if (r.derivative) out += '<span class="badge deriv">DERIVATIVE</span>';
+    if (r.risk_flags && r.risk_flags.length) {
+      out += '<span class="badge risk" title="' + esc(r.risk_flags.join(' ')) + '">' +
+        r.risk_flags.length + (r.risk_flags.length === 1 ? ' RISK FLAG' : ' RISK FLAGS') + '</span>';
+    }
     return out;
   }
 
@@ -104,7 +108,8 @@
       chip('Launch candidates ranked', rows.length.toLocaleString('en-US')) +
       chip('Watchlist covered', watchCount + ' / ' + D.watchlistCount) +
       chip('Derivatives set aside', D.setAside.length.toLocaleString('en-US')) +
-      chip('Comparables fitted', D.fit.sampleSize.toLocaleString('en-US'));
+      chip('Comparables fitted', D.fit.sampleSize.toLocaleString('en-US')) +
+      chip('Typical model error', '\u00D7/\u00F7' + D.calibration.bandFactor.toFixed(1) + ' (leave-one-out)');
     function chip(k, v) { return '<span class="chip">' + k + ': <strong>' + esc(v) + '</strong></span>'; }
   }
 
@@ -114,10 +119,16 @@
       ' protocols in this snapshot whose tokens already trade: their median market cap is ' +
       D.fit.globalMultiple.toFixed(2) + '&times; TVL, with a per-category multiple and a size bend of ' +
       D.fit.sizeSlope.toFixed(2) + ' (bigger protocols trade at lower multiples). The fit is robust: every comparable\u2019s ' +
-      'ratio is first clamped to the sample\u2019s Tukey fences, so one wild token cannot set a whole category, and thin ' +
-      'categories are shrunk toward the global median. Each pre-token protocol is then scored ' +
-      'from its own TVL, its category multiple, its 7-day TVL change, its tracked age and its chain count. No name is scored by hand.' +
-      '<span class="formula">implied = TVL &times; category multiple (size-bent) &times; momentum &times; maturity &times; breadth</span>';
+      'ratio is first clamped to the sample\u2019s Tukey fences, so one wild token cannot set a whole category, and each ' +
+      'category median must out-argue twenty phantom copies of the global median before it moves a row \u2014 a category ' +
+      'resting on one comparable (this snapshot\u2019s Risk Curators rests on a single oracle token) stays near the global ' +
+      'evidence and is flagged. Momentum counts only a quarter of a week\u2019s TVL move, clamped to +50%/&minus;40%: among ' +
+      'the comparables themselves a hot week comes with no higher multiple, so a spike earns a flag, not a boost. ' +
+      'And the model grades itself: leaving each comparable out in turn and predicting its market cap, its typical miss ' +
+      'is &times;/&divide;' + D.calibration.bandFactor.toFixed(1) + '. Every row therefore carries that range around its ' +
+      'implied value \u2014 wider where its category is thin \u2014 instead of pretending to a precision the evidence ' +
+      'does not carry. No name is scored by hand.' +
+      '<span class="formula">implied = TVL &times; category multiple (size-bent) &times; momentum &times; maturity &times; breadth, published with its calibrated range</span>';
   }
 
   function fillSelect(select, values, allLabel) {
@@ -182,7 +193,7 @@
         '<td class="chains">' + esc(r.chains.slice(0, 3).join(', ')) + (r.chains.length > 3 ? ' +' + (r.chains.length - 3) : '') + '</td>' +
         '<td class="num" title="' + money(r.tvl_usd) + '">' + compact(r.tvl_usd) + '</td>' +
         '<td class="num">' + pct(r.change_7d) + '</td>' +
-        '<td class="num implied" title="' + money(r.implied_value_usd) + '">' + compact(r.implied_value_usd) + '</td>' +
+        '<td class="num implied" title="' + money(r.implied_value_usd) + ' \u2014 typical range ' + money(r.implied_low_usd) + ' to ' + money(r.implied_high_usd) + ' (the model\u2019s own leave-one-out error)">' + compact(r.implied_value_usd) + '</td>' +
         '<td class="num">' + r.multiple.toFixed(2) + '&times;</td>' +
         '<td class="num">' + ageText(r.age_days) + '</td>' +
         '</tr>';
@@ -207,7 +218,7 @@
       '<p>The board never ranks these; they are what the multiples are fitted on. The largest by TVL:</p>' +
       '<table><thead><tr><th>Protocol</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">Multiple</th></tr></thead><tbody>' + live + '</tbody></table></div>' +
       '<div class="card"><h2>Fitted multiples by category</h2>' +
-      '<p>Median market cap / TVL per category across ' + D.fit.sampleSize + ' trading protocols, each comparable first clamped to the sample\u2019s Tukey fences, then shrunk toward the global median where a category is thin. Read the Sample column before trusting a multiple: a category standing on one or two names is mostly the global median talking.</p>' +
+      '<p>Median market cap / TVL per category across ' + D.fit.sampleSize + ' trading protocols, each comparable first clamped to the sample\u2019s Tukey fences, then shrunk toward the global median with the weight of twenty phantom samples. Read the Sample column before trusting a multiple: a category standing on one or two names is mostly the global median talking, and its rows carry a widened range and a risk flag saying so.</p>' +
       '<table><thead><tr><th>Category</th><th class="num">Sample</th><th class="num">Multiple</th></tr></thead><tbody>' + cats + '</tbody></table></div>' +
       '<div class="card"><h2>Set aside: not launches</h2>' +
       '<p>' + D.setAside.length + ' records carry no token of their own but are not launches either: wrapped, staked, bridged or exchange products of an asset that already trades, and later versions of a ranked protocol. The largest:</p>' +
@@ -244,6 +255,7 @@
     var stats = [
       ['Rank', '#' + r.rank + ' of ' + rows.length],
       ['Implied value', compact(r.implied_value_usd), true],
+      ['Typical range', compact(r.implied_low_usd) + ' \u2013 ' + compact(r.implied_high_usd)],
       ['TVL', money(r.tvl_usd)],
       ['7-day TVL change', r.change_7d === null ? 'not reported' : (r.change_7d > 0 ? '+' : '') + r.change_7d.toFixed(1) + '%'],
       ['Tracked for', r.age_days === null ? 'listing day unreported' : ageText(r.age_days) + ' (' + r.age_days + ' days)'],
@@ -263,26 +275,36 @@
         catFit
           ? esc(r.category || 'Uncategorised') + ' median fitted from ' + catFit.n + ' trading comparable' + (catFit.n === 1 ? '' : 's') +
             ', clamped to the sample\u2019s fences and shrunk toward the global ' + D.fit.globalMultiple.toFixed(2) +
-            '&times;, then bent for this protocol\u2019s size.'
+            '&times; with the weight of twenty phantom samples, then bent for this protocol\u2019s size.'
           : 'No comparable in this category trades, so the global median ' + D.fit.globalMultiple.toFixed(2) +
             '&times; stands in, bent for this protocol\u2019s size.') +
       factorRow('Momentum (7-day TVL)', r.momentum,
         r.change_7d === null
           ? 'No 7-day change reported, so momentum counts as neutral.'
-          : 'TVL moved ' + (r.change_7d > 0 ? '+' : '') + r.change_7d.toFixed(1) + '% in seven days; the model counts half of that, clamped.') +
+          : 'TVL moved ' + (r.change_7d > 0 ? '+' : '') + r.change_7d.toFixed(1) + '% in seven days; the model counts a quarter of that, clamped to +50%/&minus;40%, because among the comparables a hot week earns no higher multiple.') +
       factorRow('Maturity (tracked age)', r.maturity,
         r.age_days === null
           ? 'Listing day unreported; the median tracked age of the snapshot stands in.'
-          : 'Tracked for ' + r.age_days + ' days; the factor reaches 1.00&times; at three tracked years.') +
+          : 'Tracked for ' + r.age_days + ' days; the factor reaches 1.00&times; at three tracked years and a new listing keeps 0.85&times;.') +
       factorRow('Breadth (chains)', r.breadth,
         'Live on ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') +
-        '; +2.5% per extra chain, capped at +20%, because the TVL above already sums those chains.') +
+        '; +1.25% per extra chain, capped at +10%, because the TVL above already sums those chains.') +
       '<p class="how">' + money(r.tvl_usd) + ' of TVL. The ' + esc(r.category || 'Uncategorised') + ' category multiple is ' +
       (catFit ? catFit.multiple.toFixed(2) : D.fit.globalMultiple.toFixed(2)) + '&times;, fitted from ' +
       (catFit ? catFit.n : 0) + ' trading protocol' + (catFit && catFit.n === 1 ? '' : 's') +
       ' and shrunk toward the global median where a category is thin; bent for this protocol\u2019s size it is the ' +
       r.multiple.toFixed(2) + '&times; above. Momentum, maturity and breadth then scale the base to ' +
-      money(r.implied_value_usd) + '. The full arithmetic is in the model note on the board.</p></div>' +
+      money(r.implied_value_usd) + '. Treat that as the centre of a range, not a point: leaving each of the ' +
+      D.calibration.sampleSize + ' comparables out in turn and predicting its market cap, this model\u2019s typical miss is ' +
+      '&times;/&divide;' + D.calibration.bandFactor.toFixed(1) + (r.category_n < 3 ? ', widened by half again here because this category rests on ' +
+      (r.category_n === 0 ? 'no comparables at all' : r.category_n + ' comparable' + (r.category_n === 1 ? '' : 's')) : '') +
+      ', so the typical range is ' + money(r.implied_low_usd) + ' to ' + money(r.implied_high_usd) +
+      '. The full arithmetic is in the model note on the board.</p></div>' +
+      '<div class="risks"><h3>Risk flags from this protocol\u2019s own figures</h3>' +
+      (r.risk_flags && r.risk_flags.length
+        ? '<ul>' + r.risk_flags.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>'
+        : '<p class="none">No data-derived flags: the category evidence is not thin, the week\u2019s TVL move is inside the counted range, the record is not short and the base is not small. The standing risks of any pre-token farm \u2014 no token may ever be issued, contracts can fail \u2014 still apply and close the plan below.</p>') +
+      '</div>' +
       '<div class="plan"><h3>The farm plan</h3><ol>' +
       r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') +
       '</ol></div>';

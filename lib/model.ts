@@ -4,27 +4,40 @@
 // one at the value its already-trading peers support, what would that token be worth, and what
 // should a reader do on the protocol now to be counted if it ever does? Nothing here predicts
 // that a token will be issued. The implied value is a claim built only from the snapshot's own
-// figures, in four moves:
+// figures, in five moves:
 //
 //   1. Fit. Every protocol whose token already trades and has a recorded market cap is a
 //      comparable. In log space we take the median market-cap/TVL ratio overall and per
-//      category (each category median shrunk toward the global one by its sample size), and a
-//      pooled size slope: across the comparables, doubling TVL comes with a lower multiple,
-//      so the fitted multiple for a subject bends with its size exactly as the market's does.
-//      The fit is robust: every comparable's log ratio is first clamped to the sample's own
-//      Tukey fences (Q1 - 1.5 IQR, Q3 + 1.5 IQR), so one wild comparable — a token trading at
-//      hundreds of times its protocol's TVL — cannot set a whole category's multiple, and a
-//      category resting on a single comparable stays visibly shrunk toward the global median.
+//      category (each category median shrunk toward the global one with the weight of
+//      twenty phantom samples, so a category resting on one or two names — this snapshot's
+//      Risk Curators multiple rested on a single comparable, an oracle token — cannot pull
+//      its subjects far from the global evidence), and a pooled size slope: across the
+//      comparables, doubling TVL comes with a lower multiple, so the fitted multiple for a
+//      subject bends with its size exactly as the market's does. The fit is robust: every
+//      comparable's log ratio is first clamped to the sample's own Tukey fences
+//      (Q1 - 1.5 IQR, Q3 + 1.5 IQR), so one wild comparable — a token trading at hundreds of
+//      times its protocol's TVL — cannot set a whole category's multiple.
 //   2. Momentum. A protocol whose TVL grew over the last seven days is launching into demand;
-//      one that shrank is not. The week's change, clamped, scales the fitted value.
+//      one that shrank is not. The week's change, clamped to +50% / -40%, counts at a quarter
+//      of its size: among the snapshot's own comparables a hot week comes with no higher
+//      multiple at all (the correlation is slightly negative), so the factor is kept as a
+//      small demand tilt, never a reward for a spike — a protocol whose TVL multiplied
+//      forty-fold in a week is flagged on the board, not boosted to the clamp.
 //   3. Maturity. A protocol DefiLlama has tracked for years with no token has a settled
 //      product and a settled user base; one listed last month has neither. Age since listing,
-//      on a log curve, scales the fitted value.
+//      on a log curve, scales the fitted value gently (a new listing keeps 85%).
 //   4. Breadth. A protocol live on many chains distributes any launch across all of them, but
-//      its TVL already sums those chains, so the premium is kept small on purpose: chain
+//      its TVL already sums those chains, so the premium is kept smallest of all: chain
 //      count alone must never carry a ranking the other factors do not.
+//   5. Calibration. The model grades itself on the comparables by leave-one-out: fit on all
+//      but one, predict that one's market cap, and take the median absolute log error as the
+//      typical miss (about x/3.6 on this snapshot). Every row publishes that range around
+//      its implied value — widened by half again where its category rests on fewer than
+//      three comparables — and the data-derived risk flags behind it, so no point estimate
+//      on the board pretends to a precision the evidence does not carry.
 //
-// implied = TVL x category multiple (size-bent) x momentum x maturity x breadth, in dollars.
+// implied = TVL x category multiple (size-bent) x momentum x maturity x breadth, in dollars,
+// published with the calibrated range the model's own leave-one-out error supports.
 //
 // The board ranks the genuine launch candidates among the protocols that record no token:
 // the house watchlist included, and every candidate below its floor besides. Two kinds of
@@ -57,18 +70,20 @@ export interface Snapshot {
 
 /** The model's constants, stated on the dashboard so a reader can disagree with them. */
 export const MODEL = {
-  version: 'radar-mk3',
-  shrinkK: 5, // a category median's pull toward the global median, in phantom samples
+  version: 'radar-mk4',
+  shrinkK: 20, // a category median's pull toward the global median, in phantom samples
   sizeSlopeClamp: 1.2, // the most the size bend may move a multiple, in log points
   multipleFloor: 0.004,
   multipleCeiling: 6,
-  momentumWeight: 0.5, // a +100% week at most doubles nothing: it adds half again
-  momentumClampPct: 120,
-  momentumFloorPct: -60,
-  maturityBase: 0.72, // a protocol listed today keeps 72% of its fitted value
+  momentumWeight: 0.25, // a +50% week adds an eighth: the comparables support no more
+  momentumClampPct: 50,
+  momentumFloorPct: -40,
+  maturityBase: 0.85, // a protocol listed today keeps 85% of its fitted value
   maturityFullDays: 1095, // three tracked years earns the whole maturity factor
-  breadthPerChain: 0.025, // +2.5% a chain, +20% at most: TVL already aggregates the chains
+  breadthPerChain: 0.0125, // +1.25% a chain, +10% at most: TVL already aggregates the chains
   breadthMaxChains: 8,
+  thinCategoryN: 3, // below this many comparables a category's band widens and a flag is raised
+  thinBandWiden: 1.5, // the log half-width multiplier for a thin category's range
 };
 
 /** Categories whose products are claims on an asset that already trades, per the watchlist's own exclusions. */
@@ -286,6 +301,87 @@ export function score(p: Protocol, fit: MultipleFit, asOf: string, standInAge: n
   return { implied, multiple, momentum, maturity, breadth, age };
 }
 
+// ------------------------------------------------------------------ calibration
+
+export interface Calibration {
+  /** Median absolute log error of the leave-one-out predictions on the comparables. */
+  looMedianAbsLog: number;
+  /** exp of the above: the typical miss, as a multiply/divide factor on a point estimate. */
+  bandFactor: number;
+  /** How many comparables the calibration stands on. */
+  sampleSize: number;
+}
+
+/**
+ * The model's measured error, by leave-one-out on the comparables themselves: fit on all
+ * but one comparable, score the held-out one with the full formula, and compare with the
+ * market cap it actually trades at. The median absolute log error is the honest width of
+ * every range the board publishes — computed from the snapshot at run time, never a
+ * constant the author picked.
+ */
+export function calibrateBand(snapshot: Snapshot, standInAge: number): Calibration {
+  const sample = comparables(snapshot.protocols);
+  const errors: number[] = [];
+  for (const held of sample) {
+    const rest = snapshot.protocols.filter((p) => p !== held);
+    const trainFit = fitMultiples(rest);
+    const predicted = score(held, trainFit, snapshot.as_of, standInAge).implied;
+    errors.push(Math.abs(Math.log(predicted / held.mcap_usd!)));
+  }
+  const looMedianAbsLog = errors.length === 0 ? 0 : median(errors);
+  return { looMedianAbsLog, bandFactor: Math.exp(looMedianAbsLog), sampleSize: sample.length };
+}
+
+/** The log half-width of one row's published range: the calibrated error, widened for thin categories. */
+export function bandHalfLog(calibration: Calibration, categoryN: number): number {
+  return calibration.looMedianAbsLog * (categoryN < MODEL.thinCategoryN ? MODEL.thinBandWiden : 1);
+}
+
+// ------------------------------------------------------------------ risk flags
+
+/**
+ * What the snapshot's own figures say against a protocol, stated as flags a farmer should
+ * read before the plan: thin category evidence, a TVL spike or collapse inside one week,
+ * a short or unreported record, a small base. Derived only from the row's own figures and
+ * its category's sample size, in a fixed order, at most four.
+ */
+export function riskFlags(p: Protocol, age: number | null, categoryN: number): string[] {
+  const flags: string[] = [];
+  if (categoryN === 0) {
+    flags.push(
+      `No trading comparable in ${p.category ?? 'its category'}: the global median multiple carries this row, not category evidence, so the range is wide.`,
+    );
+  } else if (categoryN < MODEL.thinCategoryN) {
+    flags.push(
+      `Thin category evidence: the ${p.category} multiple rests on ${categoryN} trading comparable${categoryN === 1 ? '' : 's'}, so one name's mispricing moves this whole row.`,
+    );
+  }
+  if (p.change_7d !== null && p.change_7d > MODEL.momentumClampPct) {
+    flags.push(
+      `TVL spiked +${p.change_7d.toFixed(0)}% in seven days, far past the +${MODEL.momentumClampPct}% the model counts; capital that arrives that fast is often incentivised and leaves the same way.`,
+    );
+  } else if (p.change_7d !== null && p.change_7d <= -40) {
+    flags.push(
+      `TVL fell ${p.change_7d.toFixed(0)}% in seven days; the base a plan commits to may keep shrinking before any snapshot is taken.`,
+    );
+  }
+  if (age === null) {
+    flags.push(
+      'Listing day unreported: the maturity factor uses the snapshot median age, an assumption standing in for a measurement.',
+    );
+  } else if (age < 90) {
+    flags.push(
+      `Short record: tracked for only ${age} days, so neither the product nor its user base has been tested by a full market quarter.`,
+    );
+  }
+  if (p.tvl_usd < 10_000_000) {
+    flags.push(
+      'Small base: under $10M of TVL, so a launch valuation at this size can be moved by a handful of wallets and exit liquidity will be thin.',
+    );
+  }
+  return flags.slice(0, 4);
+}
+
 // ------------------------------------------------------------------ farm plans
 
 /** Working capital a farmer should expect to commit, by the protocol's size. */
@@ -419,8 +515,8 @@ function playbookFor(category: string | null): Playbook {
 
 const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
 
-/** A five-step plan a reader can start this week, written from the protocol's own figures. */
-export function farmSteps(p: Protocol, age: number | null): string[] {
+/** A plan a reader can start this week, written from the protocol's own figures, closing with its risk check. */
+export function farmSteps(p: Protocol, age: number | null, flags: string[] = []): string[] {
   const chain = p.chains[0] ?? 'Ethereum';
   const capital = capitalFor(p.tvl_usd);
   const pos = round10(capital / 2);
@@ -446,6 +542,15 @@ export function farmSteps(p: Protocol, age: number | null): string[] {
     `Hold the routine for about ${weeks} weeks, then keep the position and the wallet alive with one action a month; a dead wallet in the month of a snapshot reads as an exited user.`,
     `Follow ${p.name}'s official channels weekly for a points programme or token announcement. Log every transaction hash and date in a spreadsheet and total ${metric} each week, so the history is provable if a claim ever asks.`,
   );
+  if (flags.length > 0) {
+    steps.push(
+      `Risk check before committing a dollar: ${flags[0]} Read every flag on this protocol's detail view, and size the plan so the total loss of the farmed capital is survivable.`,
+    );
+  } else {
+    steps.push(
+      `Risk check before committing a dollar: no token may ever be issued, so farm only for the product's own use and yield, verify ${p.name}'s audits and admin keys before the first deposit, and keep the farmed capital to an amount whose total loss is survivable.`,
+    );
+  }
   return steps;
 }
 
@@ -468,6 +573,14 @@ export interface BoardRow {
   momentum: number;
   maturity: number;
   breadth: number;
+  /** How many trading comparables the row's category multiple rests on (0 = global median). */
+  category_n: number;
+  /** The calibrated typical range around the implied value: the model's own leave-one-out error. */
+  implied_low_usd: number;
+  implied_high_usd: number;
+  band_factor: number;
+  /** Data-derived warnings from the row's own figures; see riskFlags. */
+  risk_flags: string[];
 }
 
 export interface LiveRow {
@@ -498,6 +611,8 @@ export interface Radar {
   /** How many protocols the snapshot's watchlist names, so coverage reads as a real fraction. */
   watchlistCount: number;
   fit: MultipleFit;
+  /** The model's leave-one-out error on the comparables: the width of every published range. */
+  calibration: Calibration;
   rows: BoardRow[];
   live: LiveRow[];
   setAside: SetAside[];
@@ -529,24 +644,38 @@ export function buildRadar(snapshot: Snapshot): Radar {
     }))
     .sort((a, b) => b.tvl_usd - a.tvl_usd);
 
-  const rows: BoardRow[] = scored.map(({ p, s }, i) => ({
-    slug: p.slug,
-    name: p.name,
-    rank: i + 1,
-    implied_value_usd: s.implied,
-    farm_steps: farmSteps(p, s.age),
-    category: p.category,
-    tvl_usd: p.tvl_usd,
-    change_7d: p.change_7d,
-    chains: p.chains,
-    age_days: s.age,
-    watchlist: watch.has(p.slug),
-    derivative: isDerivative(p),
-    multiple: s.multiple,
-    momentum: s.momentum,
-    maturity: s.maturity,
-    breadth: s.breadth,
-  }));
+  const calibration = calibrateBand(snapshot, standInAge);
+  const categoryN = (p: Protocol): number =>
+    fit.categories.find((c) => c.category === (p.category ?? 'Uncategorised'))?.n ?? 0;
+
+  const rows: BoardRow[] = scored.map(({ p, s }, i) => {
+    const n = categoryN(p);
+    const flags = riskFlags(p, s.age, n);
+    const half = bandHalfLog(calibration, n);
+    return {
+      slug: p.slug,
+      name: p.name,
+      rank: i + 1,
+      implied_value_usd: s.implied,
+      farm_steps: farmSteps(p, s.age, flags),
+      category: p.category,
+      tvl_usd: p.tvl_usd,
+      change_7d: p.change_7d,
+      chains: p.chains,
+      age_days: s.age,
+      watchlist: watch.has(p.slug),
+      derivative: isDerivative(p),
+      multiple: s.multiple,
+      momentum: s.momentum,
+      maturity: s.maturity,
+      breadth: s.breadth,
+      category_n: n,
+      implied_low_usd: Math.max(1, Math.round(s.implied / Math.exp(half))),
+      implied_high_usd: Math.round(s.implied * Math.exp(half)),
+      band_factor: Math.exp(half),
+      risk_flags: flags,
+    };
+  });
 
   const live: LiveRow[] = comparables(snapshot.protocols)
     .sort((a, b) => b.tvl_usd - a.tvl_usd)
@@ -569,6 +698,7 @@ export function buildRadar(snapshot: Snapshot): Radar {
     scanned: snapshot.protocols.length,
     watchlistCount: snapshot.watchlist.length,
     fit,
+    calibration,
     rows,
     live,
     setAside,

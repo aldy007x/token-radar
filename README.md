@@ -13,17 +13,46 @@ later versions of a ranked protocol. Neither is a token that does not exist yet.
 
 The implied value is fitted, never assigned by hand. The 128 protocols in the same snapshot
 whose tokens already trade and carry a market cap are the comparables: the model takes their
-median market-cap/TVL multiple per category (shrunk toward the global median of 0.21x where a
-category is thin), bends it by a pooled size slope (larger protocols trade at lower multiples),
-and scales it by each subject's own seven-day TVL momentum, tracked age and chain breadth.
-The fit is robust: every comparable's ratio is first clamped to the sample's own Tukey fences,
-so a single token trading at hundreds of times its protocol's TVL cannot set a whole
-category's multiple, and the breadth premium is deliberately small (+2.5% per extra chain,
-+20% at most) because a protocol's TVL already sums its chains:
+median market-cap/TVL multiple per category (shrunk toward the global median of 0.21x with
+the weight of twenty phantom samples, so a category resting on one comparable — this
+snapshot's Risk Curators multiple rested on a single oracle token — stays near the global
+evidence), bends it by a pooled size slope (larger protocols trade at lower multiples),
+and scales it by each subject's own seven-day TVL momentum (a quarter of the move, clamped
+to +50%/−40%: among the comparables themselves a hot week earns no higher multiple, so a
+spike is flagged, not boosted), tracked age and chain breadth (deliberately smallest at
++1.25% per extra chain, because a protocol's TVL already sums its chains):
 
 ```
 implied = TVL x category multiple (size-bent) x momentum x maturity x breadth
 ```
+
+Every row also carries the model's own measured error. Calibrating by leave-one-out on the
+comparables — fit on all but one, predict that one's market cap — the typical miss is
+×/÷3.6, so each implied value is published with that range around it (widened by half again
+where the category rests on fewer than three comparables), plus the data-derived risk flags
+behind it: thin category evidence, a one-week TVL spike or collapse, a short or unreported
+record, a small base. No point estimate on the board pretends to a precision the evidence
+does not carry.
+
+## Validation (leave-one-out on the snapshot's comparables)
+
+The mk4 weights above were chosen against the mk3 model they replaced, both scored by
+leave-one-out prediction of the comparables' actual market caps (log-space errors; lower is
+better except Spearman):
+
+| Test population | Model | RMSE | MAE | Spearman |
+| --- | --- | --- | --- | --- |
+| All 128 comparables | mk3 | 2.152 | 1.633 | 0.357 |
+| All 128 comparables | mk4 | 2.125 | 1.606 | 0.379 |
+| 90 non-derivative comparables | mk3 | 2.085 | 1.601 | 0.271 |
+| 90 non-derivative comparables | mk4 | 2.082 | 1.586 | 0.300 |
+
+A modest but consistent win on both populations — and the structural fixes matter more
+than the averages: under mk3 the board's top was priced off one-name categories (Risk
+Curators from Api3 alone at 0.33×, Polymarket from a single comparable whose raw ratio is
+400×), and a +4,448% one-week TVL spike took the maximum momentum boost. Under mk4 those
+multiples sit at 0.24× and near the global median respectively, the spike is clamped and
+flagged, and every thin-evidence row says so on its face.
 
 Protocols whose token already trades are never ranked; they are shown on the page as the
 evidence the multiples were fitted on. Wrapped, staked, bridged and exchange products are

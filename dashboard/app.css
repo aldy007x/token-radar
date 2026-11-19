@@ -166,6 +166,7 @@ td .flat { color: var(--faint); }
 }
 .badge.watch { background: rgba(245, 184, 61, 0.16); color: var(--amber); border: 1px solid rgba(245, 184, 61, 0.45); }
 .badge.deriv { background: rgba(132, 152, 179, 0.14); color: var(--dim); border: 1px solid var(--line); }
+.badge.risk { background: rgba(240, 118, 107, 0.13); color: var(--red); border: 1px solid rgba(240, 118, 107, 0.45); }
 
 .empty { padding: 34px; text-align: center; color: var(--faint); }
 
@@ -216,6 +217,13 @@ td.rank .delta { display: block; font-size: 11px; font-weight: 600; }
 td.rank .delta.up { color: var(--green); }
 td.rank .delta.down { color: var(--red); }
 .factors .how { color: var(--faint); font-size: 13px; margin-top: 10px; }
+
+.risks { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--red); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px; }
+.risks h3 { margin: 0 0 10px; font-size: 15px; }
+.risks ul { margin: 0; padding-left: 20px; }
+.risks li { margin: 7px 0; color: var(--ink); }
+.risks li::marker { color: var(--red); }
+.risks .none { margin: 0; color: var(--dim); font-size: 14px; }
 
 .plan { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 22px; }
 .plan ol { margin: 0; padding-left: 22px; }
